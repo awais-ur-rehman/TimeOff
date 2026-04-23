@@ -1,6 +1,8 @@
 CLAUDE.md
 TEST_CASES.md
-TimeOff_TRD.md
+TRD.md
 .env
 skills-lock.json
 .agents
+Take_home_question.md
+node_modules
