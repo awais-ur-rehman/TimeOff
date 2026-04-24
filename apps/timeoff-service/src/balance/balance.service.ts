@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, QueryRunner, Repository } from 'typeorm';
+import { DataSource, QueryResult, QueryRunner, Repository } from 'typeorm';
 import { LeaveBalance } from './balance.entity';
 
 export interface BalanceWithEffective extends LeaveBalance {
@@ -129,8 +129,9 @@ export class BalanceService {
          AND (total_days - used_days - reserved_days) >= ?
          AND version     = ?`,
       [days, employeeId, locationId, leaveType, days, currentVersion],
-    );
-    return (result as { changes: number }).changes > 0;
+      true,
+    ) as QueryResult;
+    return (result.affected ?? 0) > 0;
   }
 
   /**

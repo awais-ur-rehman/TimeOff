@@ -1,0 +1,61 @@
+version: '3.9'
+
+services:
+  mock-hcm:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock-hcm
+    ports:
+      - "3099:3001"
+    environment:
+      HCM_ERROR_RATE: "0"
+      PORT: "3001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/hcm/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  timeoff-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_PATH: /data/timeoff.db
+      HCM_BASE_URL: http://mock-hcm:3001
+      HCM_SECRET: dev-secret
+      OUTBOX_POLL_INTERVAL_MS: "5000"
+      HCM_REQUEST_TIMEOUT_MS: "8000"
+      HCM_MAX_RETRIES: "4"
+    volumes:
+      - sqlite-test-data:/data
+    depends_on:
+      mock-hcm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  e2e-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    environment:
+      # E2E tests spin up their own in-process NestJS app with in-memory SQLite
+      # and an in-process mock HCM server, so these variables are not used at
+      # test runtime — but DATABASE_PATH=:memory: is set in .env.test.
+      NODE_ENV: test
+    depends_on:
+      timeoff-service:
+        condition: service_healthy
+    volumes:
+      - ./apps/timeoff-service/test:/app/apps/timeoff-service/test:ro
+
+volumes:
+  sqlite-test-data:

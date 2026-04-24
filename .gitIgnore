@@ -1,8 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Test coverage
+coverage/
+
+# SQLite database files
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Environment secrets (keep .env.example)
+.env
+.env.local
+.env.*.local
+
+# IDE / OS
+.DS_Store
+.idea/
+*.iml
+
+# Internal tooling (not needed for submission)
 CLAUDE.md
 TEST_CASES.md
 TRD.md
-.env
 skills-lock.json
 .agents
 Take_home_question.md
-node_modules

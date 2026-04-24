@@ -26,7 +26,7 @@ export class OutboxEvent {
   attempts: number;
 
   @Column({ nullable: true, type: 'datetime' })
-  nextRetryAt: Date;
+  nextRetryAt: Date | null;
 
   @Column()
   requestId: number;
