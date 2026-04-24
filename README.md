@@ -57,7 +57,7 @@ npm run start:mock-hcm
 npm run start
 ```
 
-The mock HCM runs on port 3001 and the time-off service on port 3000. The service creates a SQLite database at `./data/timeoff.db` on first start.
+The mock HCM runs on port 3001 (`MOCK_HCM_PORT`) and the time-off service on port 3000 (`PORT`). Both are configured separately so there's no conflict. The service creates a SQLite database at `./data/timeoff.db` on first start.
 
 Verify the service is running:
 

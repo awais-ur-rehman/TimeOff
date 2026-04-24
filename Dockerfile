@@ -3,7 +3,6 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Build tools needed to compile better-sqlite3 native bindings
 RUN apk add --no-cache python3 make g++
 
 COPY package*.json ./
@@ -12,16 +11,18 @@ RUN npm ci
 COPY . .
 RUN npm run build:timeoff
 
-# ── Runtime ───────────────────────────────────────────────────────────────────
 FROM node:20-alpine
 
-RUN apk add --no-cache curl
+RUN apk add --no-cache curl python3 make g++
 
 WORKDIR /app
 
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
 COPY package*.json ./
+RUN npm ci --omit=dev
+
+RUN apk del python3 make g++ && rm -rf /var/cache/apk/*
+
+COPY --from=builder /app/dist ./dist
 
 RUN mkdir -p /data
 
