@@ -24,7 +24,6 @@ describe('Outbox idempotency', () => {
     const employeeHeaders = { 'x-employee-id': String(ctx.employeeId), 'x-role': 'employee' };
     const managerHeaders = { 'x-employee-id': String(ctx.managerId), 'x-role': 'manager', 'x-location-id': ctx.locationId };
 
-    // Submit and approve a request — this creates one outbox HCM_DEDUCT event
     const submitRes = await request(app.getHttpServer())
       .post('/requests')
       .set(employeeHeaders)
@@ -35,7 +34,6 @@ describe('Outbox idempotency', () => {
       .patch(`/requests/${submitRes.body.id}/approve`)
       .set(managerHeaders);
 
-    // Wait for first outbox event to be processed (DONE)
     await waitFor(async () => {
       const rows = await ds.query(
         "SELECT status FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
@@ -44,22 +42,16 @@ describe('Outbox idempotency', () => {
       return rows[0]?.status === 'DONE';
     }, 3000, 100);
 
-    // Grab the original event id — the processor uses 'outbox-<event.id>' as
-    // the HCM idempotency key.  To re-trigger it with the SAME key we reset
-    // the SAME row back to PENDING rather than inserting a clone with a new id.
     const [originalEvent] = await ds.query(
       "SELECT id FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
       [submitRes.body.id],
     );
 
-    // Reset the original event to PENDING so it is re-processed with the same id
-    // (and thus the same idempotency key 'outbox-<id>').
     await ds.query(
       "UPDATE outbox_events SET status = 'PENDING', attempts = 0 WHERE id = ?",
       [originalEvent.id],
     );
 
-    // Wait for the event to be processed a second time (DONE again)
     await waitFor(async () => {
       const rows = await ds.query(
         "SELECT status FROM outbox_events WHERE id = ?",
@@ -68,7 +60,6 @@ describe('Outbox idempotency', () => {
       return rows[0]?.status === 'DONE';
     }, 3000, 100);
 
-    // The HCM deductions map should still have exactly one entry
     const deductionCount = ctx.hcm['deductions'].size;
     expect(deductionCount).toBe(1);
   });
@@ -95,7 +86,6 @@ describe('Outbox retry backoff', () => {
     const employeeHeaders = { 'x-employee-id': String(ctx.employeeId), 'x-role': 'employee' };
     const managerHeaders = { 'x-employee-id': String(ctx.managerId), 'x-role': 'manager', 'x-location-id': ctx.locationId };
 
-    // Set HCM to always fail
     ctx.hcm.setErrorRate(1.0);
 
     const submitRes = await request(app.getHttpServer())
@@ -106,7 +96,6 @@ describe('Outbox retry backoff', () => {
       .patch(`/requests/${submitRes.body.id}/approve`)
       .set(managerHeaders);
 
-    // Wait for at least one failure attempt
     await waitFor(async () => {
       const rows = await ds.query(
         "SELECT attempts FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
@@ -115,8 +104,6 @@ describe('Outbox retry backoff', () => {
       return rows[0]?.attempts >= 1;
     }, 2000, 100);
 
-    // With our implementation, nextRetryAt is null on failure (immediate retry).
-    // Verify the event is still in PENDING or FAILED state (retry mechanism is active).
     const rows = await ds.query(
       "SELECT status, attempts FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
       [submitRes.body.id],
@@ -148,7 +135,6 @@ describe('Manual retry via admin', () => {
     const employeeHeaders = { 'x-employee-id': String(ctx.employeeId), 'x-role': 'employee' };
     const managerHeaders = { 'x-employee-id': String(ctx.managerId), 'x-role': 'manager', 'x-location-id': ctx.locationId };
 
-    // Set HCM to always fail, create a FAILED event
     ctx.hcm.setErrorRate(1.0);
 
     const submitRes = await request(app.getHttpServer())
@@ -159,7 +145,6 @@ describe('Manual retry via admin', () => {
       .patch(`/requests/${submitRes.body.id}/approve`)
       .set(managerHeaders);
 
-    // Wait for event to be FAILED
     await waitFor(async () => {
       const rows = await ds.query(
         "SELECT status FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
@@ -173,7 +158,6 @@ describe('Manual retry via admin', () => {
       [submitRes.body.id],
     );
 
-    // Reset HCM so retry can succeed
     ctx.hcm.setErrorRate(0);
 
     const retryRes = await request(app.getHttpServer())
@@ -183,7 +167,6 @@ describe('Manual retry via admin', () => {
     expect(retryRes.status).toBe(201);
     expect(retryRes.body.status).toBe('PENDING');
 
-    // Event should now be re-processed
     await waitFor(async () => {
       const rows = await ds.query(
         "SELECT status FROM outbox_events WHERE id = ?",
@@ -208,13 +191,11 @@ describe('Manual retry via admin', () => {
     const employeeHeaders = { 'x-employee-id': String(ctx.employeeId), 'x-role': 'employee' };
     const managerHeaders = { 'x-employee-id': String(ctx.managerId), 'x-role': 'manager', 'x-location-id': ctx.locationId };
 
-    // Create a request and approve it — the outbox event starts as PENDING
     const submitRes = await request(app.getHttpServer())
       .post('/requests')
       .set(employeeHeaders)
       .send({ employeeId: ctx.employeeId, locationId: ctx.locationId, leaveType: ctx.leaveType, startDate: futureDate(1), endDate: futureDate(3) });
 
-    // Don't approve so no outbox event exists yet. Instead, manually insert a PENDING one.
     await ds.query(
       `INSERT INTO outbox_events (event_type, payload, status, attempts, request_id, created_at)
        VALUES ('HCM_DEDUCT', '{}', 'PENDING', 0, ?, datetime('now'))`,

@@ -16,8 +16,8 @@ export interface DeductionRecord {
 
 export class HcmState {
   readonly balances = new Map<string, BalanceRecord>();
-  readonly deductions = new Map<string, DeductionRecord>(); // idempotencyKey → record
-  readonly requestIndex = new Map<string, string>(); // hcmRequestId → idempotencyKey
+  readonly deductions = new Map<string, DeductionRecord>();
+  readonly requestIndex = new Map<string, string>();
   private requestCounter = 0;
 
   balanceKey(employeeId: number | string, locationId: string, leaveType: string): string {

@@ -35,10 +35,9 @@ describe('Batch sync', () => {
         ],
       });
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(200);
     expect(res.body.recordsProcessed).toBe(1);
 
-    // Verify the balance was updated in DB
     const rows = await ds.query(
       'SELECT total_days FROM leave_balances WHERE employee_id = ? AND location_id = ? AND leave_type = ?',
       [ctx.employeeId, ctx.locationId, ctx.leaveType],
@@ -51,7 +50,6 @@ describe('Batch sync', () => {
     const ds = app.get(DataSource);
     const adminHeaders = { 'x-employee-id': '999', 'x-role': 'admin' };
 
-    // Set used + reserved > what HCM will report
     await ds.query(
       'UPDATE leave_balances SET used_days = 5, reserved_days = 4 WHERE employee_id = ?',
       [ctx.employeeId],
@@ -66,7 +64,7 @@ describe('Batch sync', () => {
         ],
       });
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(200);
     expect(res.body.discrepancies).toBe(1);
   });
 
@@ -106,7 +104,6 @@ describe('Batch sync', () => {
     );
     const originalTotal = Number(before[0].total_days);
 
-    // Send a batch with a totalDays value of 0 which should fail DTO validation (not positive)
     const res = await request(app.getHttpServer())
       .post('/sync/batch')
       .set(adminHeaders)
@@ -167,15 +164,12 @@ describe('Webhook sync', () => {
     const ds = app.get(DataSource);
     const employeeHeaders = { 'x-employee-id': String(ctx.employeeId), 'x-role': 'employee' };
 
-    // Create a pending request (reserves 3 days)
     const submitRes = await request(app.getHttpServer())
       .post('/requests')
       .set(employeeHeaders)
       .send({ employeeId: ctx.employeeId, locationId: ctx.locationId, leaveType: ctx.leaveType, startDate: futureDate(1), endDate: futureDate(3) });
     expect(submitRes.status).toBe(201);
 
-    // Balance is now: total=10, used=0, reserved=3
-    // Send webhook with totalDays=2 (less than used+reserved=3 → discrepancy)
     const webhookRes = await request(app.getHttpServer())
       .post('/sync/webhook')
       .set('x-hcm-secret', HCM_SECRET)
@@ -183,7 +177,6 @@ describe('Webhook sync', () => {
 
     expect(webhookRes.status).toBe(204);
 
-    // A sync_log entry with discrepancies=1 should be written
     const logRows = await ds.query(
       "SELECT discrepancies FROM sync_log WHERE sync_type = 'WEBHOOK' ORDER BY id DESC LIMIT 1",
     );
@@ -226,9 +219,6 @@ describe('Scheduled reconciliation', () => {
     const ds = app.get(DataSource);
     const adminHeaders = { 'x-employee-id': '999', 'x-role': 'admin' };
 
-    // Make the balance stale (last_synced_at > 30 min ago).
-    // Use the entity manager so TypeORM serialises the date in the same
-    // "YYYY-MM-DD HH:MM:SS" (UTC, no-Z) format it uses for queries.
     const staleDate = new Date(Date.now() - 35 * 60 * 1000);
     const staleBalance = await ds.manager.findOne(LeaveBalance, { where: { employeeId: ctx.employeeId } });
     if (staleBalance) {
@@ -236,14 +226,13 @@ describe('Scheduled reconciliation', () => {
       await ds.manager.save(LeaveBalance, staleBalance);
     }
 
-    // Seed HCM with a fresh balance value
     ctx.hcm.seedBalance(ctx.employeeId, ctx.locationId, ctx.leaveType, 25);
 
     const res = await request(app.getHttpServer())
       .post('/sync/trigger')
       .set(adminHeaders);
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(200);
     expect(res.body.recordsProcessed).toBeGreaterThanOrEqual(1);
   });
 
@@ -319,26 +308,21 @@ describe('Anniversary simulation flow', () => {
     const ds = app.get(DataSource);
     const employeeHeaders = { 'x-employee-id': String(ctx.employeeId), 'x-role': 'employee' };
 
-    // 1. Set up: employee has 5 total days, 3 reserved
     await ds.query(
       'UPDATE leave_balances SET total_days = 5, used_days = 0, reserved_days = 3 WHERE employee_id = ?',
       [ctx.employeeId],
     );
 
-    // Also seed HCM with 5 days
     ctx.hcm.seedBalance(ctx.employeeId, ctx.locationId, ctx.leaveType, 5);
 
-    // 2. Simulate anniversary on mock HCM (+5 bonus days → HCM now has 10)
     ctx.hcm.simulateAnniversary(String(ctx.employeeId), 5);
 
-    // 3. Send webhook to update the shadow (totalDays: 10)
     const webhookRes = await request(app.getHttpServer())
       .post('/sync/webhook')
       .set('x-hcm-secret', HCM_SECRET)
       .send({ employeeId: ctx.employeeId, locationId: ctx.locationId, leaveType: ctx.leaveType, totalDays: 10, hcmVersion: '2' });
     expect(webhookRes.status).toBe(204);
 
-    // 4. Verify effective_available = 10 - 0 used - 3 reserved = 7
     const balanceRes = await request(app.getHttpServer())
       .get(`/balances/${ctx.employeeId}`)
       .set(employeeHeaders);

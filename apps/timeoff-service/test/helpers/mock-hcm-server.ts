@@ -29,17 +29,27 @@ export class MockHcmServer {
   private errorRate = 0;
   private requestCounter = 0;
 
+  public port: number;
+
   start(port: number): Promise<void> {
     this.server = http.createServer((req, res) => {
       let body = '';
       req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
       req.on('end', () => {
         const parsed: unknown = body ? JSON.parse(body) : {};
+        if (req.method === 'GET') {
+           this.route(req, res, parsed as Record<string, unknown>);
+           return;
+        }
         this.route(req, res, parsed as Record<string, unknown>);
       });
     });
     return new Promise((resolve, reject) => {
-      this.server.listen(port, () => resolve());
+      this.server.listen(port, () => {
+        const addr = this.server.address() as import('net').AddressInfo;
+        this.port = addr.port;
+        resolve();
+      });
       this.server.on('error', reject);
     });
   }
@@ -108,6 +118,14 @@ export class MockHcmServer {
         const existing = this.deductions.get(idempotencyKey)!;
         return this.json(res, 200, { hcmRequestId: existing.hcmRequestId });
       }
+      const balanceKey = `${body.employeeId}:${body.locationId}:${body.leaveType}`;
+      const balance = this.balances.get(balanceKey);
+      if (!balance) {
+        return this.json(res, 404, { error: 'Balance not found' });
+      }
+      if (balance.totalDays < (body.days as number)) {
+        return this.json(res, 422, { error: 'Insufficient balance' });
+      }
       this.requestCounter += 1;
       const hcmRequestId = `hcm-${this.requestCounter}-${Date.now()}`;
       const record: DeductionRecord = {
@@ -117,6 +135,11 @@ export class MockHcmServer {
         days: body.days as number,
         hcmRequestId,
       };
+      this.balances.set(balanceKey, {
+        ...balance,
+        totalDays: balance.totalDays - record.days,
+        hcmVersion: String((Number(balance.hcmVersion) || 1) + 1),
+      });
       if (idempotencyKey) this.deductions.set(idempotencyKey, record);
       this.hcmRequests.set(hcmRequestId, idempotencyKey ?? hcmRequestId);
       return this.json(res, 201, { hcmRequestId });
@@ -130,6 +153,18 @@ export class MockHcmServer {
         return;
       }
       const idemKey = this.hcmRequests.get(id)!;
+      const deduction = this.deductions.get(idemKey);
+      if (deduction) {
+        const balanceKey = `${deduction.employeeId}:${deduction.locationId}:${deduction.leaveType}`;
+        const balance = this.balances.get(balanceKey);
+        if (balance) {
+          this.balances.set(balanceKey, {
+            ...balance,
+            totalDays: balance.totalDays + deduction.days,
+            hcmVersion: String((Number(balance.hcmVersion) || 1) + 1),
+          });
+        }
+      }
       this.deductions.delete(idemKey);
       this.hcmRequests.delete(id);
       res.writeHead(204);
@@ -149,6 +184,9 @@ export class MockHcmServer {
     if (method === 'POST' && url === '/hcm/balances/seed') {
       const key = `${body.employeeId}:${body.locationId}:${body.leaveType}`;
       this.balances.set(key, {
+        employeeId: body.employeeId as number,
+        locationId: body.locationId as string,
+        leaveType: body.leaveType as string,
         totalDays: body.totalDays as number,
         hcmVersion: '1',
       });
@@ -200,8 +238,9 @@ let _refCount = 0;
 
 export async function acquireMockHcm(port = 3099): Promise<MockHcmServer> {
   if (!_server) {
-    _server = new MockHcmServer();
-    await _server.start(port);
+    const server = new MockHcmServer();
+    await server.start(port);
+    _server = server;
   }
   _refCount += 1;
   return _server;

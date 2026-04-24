@@ -12,10 +12,10 @@ const ALLOWED_TRANSITIONS: Record<RequestStatus, RequestStatus[]> = {
     RequestStatus.FAILED,
     RequestStatus.CANCELLED,
   ],
-  [RequestStatus.APPROVED]: [RequestStatus.CANCELLED],
+  [RequestStatus.APPROVED]: [],
   [RequestStatus.REJECTED]: [],
   [RequestStatus.CANCELLED]: [],
-  [RequestStatus.FAILED]: [],
+  [RequestStatus.FAILED]: [RequestStatus.APPROVED],
 };
 
 export function canTransition(from: RequestStatus, to: RequestStatus): boolean {

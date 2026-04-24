@@ -107,10 +107,6 @@ export class BalanceService {
     return { isDiscrepancy };
   }
 
-  /**
-   * Atomic conditional UPDATE — the single place a raw query is used.
-   * Returns true if the row was updated (i.e., balance was sufficient and version matched).
-   */
   async reserveBalance(
     employeeId: number,
     locationId: string,
@@ -134,11 +130,6 @@ export class BalanceService {
     return (result.affected ?? 0) > 0;
   }
 
-  /**
-   * High-level reservation with retry loop and ConflictException after 3 misses.
-   * Caller receives the committed QueryRunner transaction so it can write the request row
-   * in the same atomic operation.
-   */
   async reserveBalanceWithRetry(
     employeeId: number,
     locationId: string,
@@ -154,9 +145,9 @@ export class BalanceService {
       });
 
       if (!balance) {
-        throw new UnprocessableEntityException(
-          `No leave balance record found for employee ${employeeId}, location ${locationId}, type ${leaveType}`,
-        );
+        throw new UnprocessableEntityException({
+          message: `No leave balance record found for employee ${employeeId}, location ${locationId}, type ${leaveType}`,
+        });
       }
 
       const effective = this.calculateEffectiveAvailable(
@@ -166,9 +157,10 @@ export class BalanceService {
       );
 
       if (effective < days) {
-        throw new UnprocessableEntityException(
-          `Insufficient balance. Requested: ${days}, available: ${effective}`,
-        );
+        throw new UnprocessableEntityException({
+          message: `Insufficient balance. Requested: ${days}, available: ${effective}`,
+          effectiveAvailable: effective,
+        });
       }
 
       const reserved = await this.reserveBalance(
@@ -200,9 +192,10 @@ export class BalanceService {
         )
       : 0;
 
-    throw new ConflictException(
-      `Balance reservation failed after ${MAX_ATTEMPTS} attempts. Current effective balance: ${effectiveNow}`,
-    );
+    throw new ConflictException({
+      message: `Balance reservation failed after ${MAX_ATTEMPTS} attempts. Current effective balance: ${effectiveNow}`,
+      effectiveAvailable: effectiveNow,
+    });
   }
 
   async releaseReserved(

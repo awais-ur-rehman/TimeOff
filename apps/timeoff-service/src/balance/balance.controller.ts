@@ -11,18 +11,22 @@ import { Request } from 'express';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RequestUser } from '../common/interfaces/request-user.interface';
 import { BalanceService } from './balance.service';
+import { EmployeeService } from '../employee/employee.service';
 
 @Controller('balances')
 @UseGuards(AuthGuard)
 export class BalanceController {
-  constructor(private readonly balanceService: BalanceService) {}
+  constructor(
+    private readonly balanceService: BalanceService,
+    private readonly employeeService: EmployeeService,
+  ) {}
 
   @Get(':employeeId')
   async getByEmployee(
     @Param('employeeId', ParseIntPipe) employeeId: number,
     @Req() req: Request & { user: RequestUser },
   ) {
-    this.enforceAccess(req.user, employeeId);
+    await this.enforceAccess(req.user, employeeId);
     return this.balanceService.getByEmployee(employeeId);
   }
 
@@ -32,12 +36,21 @@ export class BalanceController {
     @Param('locationId') locationId: string,
     @Req() req: Request & { user: RequestUser },
   ) {
-    this.enforceAccess(req.user, employeeId);
+    await this.enforceAccess(req.user, employeeId);
     return this.balanceService.getByEmployeeAndLocation(employeeId, locationId);
   }
 
-  private enforceAccess(user: RequestUser, targetEmployeeId: number): void {
-    if (user.role === 'admin' || user.role === 'manager') return;
+  private async enforceAccess(user: RequestUser, targetEmployeeId: number): Promise<void> {
+    if (user.role === 'admin') {
+      return;
+    }
+    if (user.role === 'manager') {
+      const employee = await this.employeeService.findById(targetEmployeeId);
+      if (!user.locationId || employee.locationId !== user.locationId) {
+        throw new ForbiddenException('Manager scope does not cover this employee');
+      }
+      return;
+    }
     if (user.employeeId !== targetEmployeeId) {
       throw new ForbiddenException('Employees can only access their own balance data');
     }

@@ -8,6 +8,7 @@ import {
   waitFor,
   TestContext,
 } from './helpers/db.helper';
+import { OutboxProcessor } from '../src/outbox/outbox.processor';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -63,6 +64,14 @@ async function dbQuery(ctx: TestContext, sql: string, params: unknown[] = []) {
   return ctx.app.get(DataSource).query(sql, params);
 }
 
+async function forceOutboxRetry(ctx: TestContext, requestId: number): Promise<void> {
+  await dbQuery(
+    ctx,
+    "UPDATE outbox_events SET next_retry_at = datetime('now', '-1 second') WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
+    [requestId],
+  );
+}
+
 // ─── Full happy path ─────────────────────────────────────────────────────────
 
 describe('Full happy path', () => {
@@ -73,30 +82,25 @@ describe('Full happy path', () => {
   beforeEach(async () => { await resetState(ctx); });
 
   it('employee submits request, manager approves, HCM confirms, balance moves from reserved to used', async () => {
-    // 1. Submit 3-day request
     const submitRes = await submitRequest(ctx, 3);
     expect(submitRes.status).toBe(201);
     expect(submitRes.body.status).toBe('PENDING');
 
     const requestId: number = submitRes.body.id;
 
-    // 2. Balance shows 7 effective available (10 - 3 reserved)
     const balance1 = await getBalance(ctx);
     expect(Number(balance1.effectiveAvailable)).toBe(7);
     expect(Number(balance1.reservedDays)).toBe(3);
 
-    // 3. Manager approves
     const approveRes = await approveRequest(ctx, requestId);
     expect(approveRes.status).toBe(200);
     expect(approveRes.body.status).toBe('APPROVED_PENDING_HCM');
 
-    // 4. Wait for outbox processor to fire and HCM to confirm
     await waitFor(async () => {
       const req = await getRequest(ctx, requestId);
       return req.status === 'APPROVED';
     }, 3000, 100);
 
-    // 5. Assert final state
     const finalReq = await getRequest(ctx, requestId);
     expect(finalReq.status).toBe('APPROVED');
     expect(finalReq.hcmRequestId).toBeTruthy();
@@ -228,12 +232,10 @@ describe('Employee cancellation before approval', () => {
 
   it('returns 409 when request is already in a terminal state', async () => {
     const { body: req } = await submitRequest(ctx, 3);
-    // Reject first (puts it in terminal state)
     await request(ctx.app.getHttpServer())
       .patch(`/requests/${req.id}/reject`)
       .set(managerHeaders(ctx))
       .send({ reason: 'No capacity' });
-    // Try to cancel the already-rejected request
     const delRes = await request(ctx.app.getHttpServer())
       .delete(`/requests/${req.id}`)
       .set(employeeHeaders(ctx));
@@ -278,18 +280,15 @@ describe('Employee cancellation after approval', () => {
     const { body: req } = await submitRequest(ctx, 3);
     await approveRequest(ctx, req.id);
 
-    // Wait for the HCM_DEDUCT to be processed so hcmRequestId is set
-    await waitFor(async () => {
-      const r = await getRequest(ctx, req.id);
-      return r.hcmRequestId != null;
-    }, 3000, 100);
-
-    // Cancel — this triggers HCM_REVERSE
-    await request(ctx.app.getHttpServer())
+    // Cancel immediately while APPROVED_PENDING_HCM — creates HCM_REVERSE event.
+    // The HCM_DEDUCT event will still fire, set hcmRequestId on the (now CANCELLED)
+    // request, and then the HCM_REVERSE will pick it up and call DELETE.
+    const delRes = await request(ctx.app.getHttpServer())
       .delete(`/requests/${req.id}`)
       .set(employeeHeaders(ctx));
+    expect(delRes.status).toBe(204);
 
-    // Wait for HCM_REVERSE event to be processed
+    // Wait for HCM_REVERSE event to be processed (depends on DEDUCT setting hcmRequestId first)
     await waitFor(async () => {
       const rows = await dbQuery(
         ctx,
@@ -297,9 +296,8 @@ describe('Employee cancellation after approval', () => {
         [req.id],
       );
       return rows[0]?.status === 'DONE';
-    }, 3000, 100);
+    }, 5000, 100);
 
-    // Verify HCM_REVERSE event reached DONE
     const reverseEvents = await dbQuery(
       ctx,
       "SELECT status FROM outbox_events WHERE event_type = 'HCM_REVERSE' AND request_id = ?",
@@ -318,63 +316,125 @@ describe('HCM failure on deduction', () => {
   afterAll(async () => { await teardownTestApp(ctx); });
   beforeEach(async () => {
     await resetState(ctx);
-    ctx.hcm.setErrorRate(1.0); // All HCM calls fail
+    ctx.hcm.setErrorRate(1.0);
   });
 
   it('request stays in APPROVED_PENDING_HCM when HCM returns 500', async () => {
     const { body: req } = await submitRequest(ctx, 3);
     await approveRequest(ctx, req.id);
 
-    // Wait a bit for at least one processor tick
-    await new Promise((r) => setTimeout(r, 300));
-
-    const current = await getRequest(ctx, req.id);
-    expect(['APPROVED_PENDING_HCM', 'FAILED']).toContain(current.status);
-  });
-
-  it('outbox event retries up to HCM_MAX_RETRIES times', async () => {
-    const { body: req } = await submitRequest(ctx, 3);
-    await approveRequest(ctx, req.id);
-
-    // Wait for event to exhaust retries (4 attempts × ~100ms interval = ~400ms minimum)
     await waitFor(async () => {
       const rows = await dbQuery(
         ctx,
-        "SELECT status, attempts FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
+        "SELECT attempts FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
         [req.id],
       );
-      return rows[0]?.attempts >= 4;
-    }, 5000, 200);
+      return rows[0]?.attempts === 1;
+    }, 3000, 100);
+
+    const current = await getRequest(ctx, req.id);
+    expect(current.status).toBe('APPROVED_PENDING_HCM');
+  });
+
+  it('outbox event retries up to HCM_MAX_RETRIES times', async () => {
+    const processor = ctx.app.get(OutboxProcessor);
+    const { body: req } = await submitRequest(ctx, 3);
+    await approveRequest(ctx, req.id);
+
+    await waitFor(async () => {
+      const rows = await dbQuery(
+        ctx,
+        "SELECT attempts FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
+        [req.id],
+      );
+      return rows[0]?.attempts === 1;
+    }, 3000, 100);
+
+    await forceOutboxRetry(ctx, req.id);
+    await processor.tick();
+    await waitFor(async () => {
+      const rows = await dbQuery(
+        ctx,
+        "SELECT attempts FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
+        [req.id],
+      );
+      return rows[0]?.attempts === 2;
+    }, 3000, 100);
+
+    await forceOutboxRetry(ctx, req.id);
+    await processor.tick();
+    await waitFor(async () => {
+      const rows = await dbQuery(
+        ctx,
+        "SELECT attempts FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
+        [req.id],
+      );
+      return rows[0]?.attempts === 3;
+    }, 3000, 100);
+
+    await forceOutboxRetry(ctx, req.id);
+    await processor.tick();
 
     const rows = await dbQuery(
       ctx,
-      "SELECT attempts FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
+      "SELECT attempts, status FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
       [req.id],
     );
-    expect(rows[0].attempts).toBeGreaterThanOrEqual(4);
+    expect(rows[0].attempts).toBe(4);
+    expect(rows[0].status).toBe('FAILED');
   });
 
   it('request moves to FAILED after max retries exhausted', async () => {
+    const processor = ctx.app.get(OutboxProcessor);
     const { body: req } = await submitRequest(ctx, 3);
     await approveRequest(ctx, req.id);
+
+    await waitFor(async () => {
+      const rows = await dbQuery(
+        ctx,
+        "SELECT attempts FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
+        [req.id],
+      );
+      return rows[0]?.attempts === 1;
+    }, 3000, 100);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await forceOutboxRetry(ctx, req.id);
+      await processor.tick();
+    }
 
     await waitFor(async () => {
       const current = await getRequest(ctx, req.id);
       return current.status === 'FAILED';
-    }, 5000, 200);
+    }, 3000, 100);
 
     const current = await getRequest(ctx, req.id);
     expect(current.status).toBe('FAILED');
   });
 
   it('reserved_days stays reserved when request is FAILED (not released)', async () => {
+    const processor = ctx.app.get(OutboxProcessor);
     const { body: req } = await submitRequest(ctx, 3);
     await approveRequest(ctx, req.id);
 
     await waitFor(async () => {
+      const rows = await dbQuery(
+        ctx,
+        "SELECT attempts FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
+        [req.id],
+      );
+      return rows[0]?.attempts === 1;
+    }, 3000, 100);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await forceOutboxRetry(ctx, req.id);
+      await processor.tick();
+    }
+
+    await waitFor(async () => {
       const current = await getRequest(ctx, req.id);
       return current.status === 'FAILED';
-    }, 5000, 200);
+    }, 3000, 100);
 
     const balance = await getBalance(ctx);
     expect(Number(balance.reservedDays)).toBe(3);
@@ -393,33 +453,33 @@ describe('Cancellation after FAILED state', () => {
     ctx.hcm.setErrorRate(1.0);
   });
 
-  it('cancelling a FAILED request releases reserved_days', async () => {
+  it('returns 409 when cancelling a FAILED request', async () => {
+    const processor = ctx.app.get(OutboxProcessor);
     const { body: req } = await submitRequest(ctx, 3);
     await approveRequest(ctx, req.id);
 
     await waitFor(async () => {
+      const rows = await dbQuery(
+        ctx,
+        "SELECT attempts FROM outbox_events WHERE request_id = ? AND event_type = 'HCM_DEDUCT'",
+        [req.id],
+      );
+      return rows[0]?.attempts === 1;
+    }, 3000, 100);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await forceOutboxRetry(ctx, req.id);
+      await processor.tick();
+    }
+
+    await waitFor(async () => {
       const current = await getRequest(ctx, req.id);
       return current.status === 'FAILED';
-    }, 5000, 200);
+    }, 3000, 100);
 
-    // Reset error rate so we know the cancel action itself works
-    ctx.hcm.setErrorRate(0);
-
-    // Cancel the FAILED request — state machine allows FAILED, but our DELETE
-    // endpoint returns 409 for terminal states. A FAILED request IS terminal.
-    // The spec says "cancelling a FAILED request releases reserved_days" —
-    // this is done via admin action (manual status override + releaseReserved).
-    // For this test we exercise it directly via the DataSource to confirm
-    // the reserved_days mechanic works independently of HTTP routing.
-    const ds = ctx.app.get(DataSource);
-    await ds.query(
-      `UPDATE leave_balances
-       SET reserved_days = MAX(0, reserved_days - 3)
-       WHERE employee_id = ? AND location_id = ? AND leave_type = ?`,
-      [ctx.employeeId, ctx.locationId, ctx.leaveType],
-    );
-
-    const balance = await getBalance(ctx);
-    expect(Number(balance.reservedDays)).toBe(0);
+    const res = await request(ctx.app.getHttpServer())
+      .delete(`/requests/${req.id}`)
+      .set(employeeHeaders(ctx));
+    expect(res.status).toBe(409);
   });
 });

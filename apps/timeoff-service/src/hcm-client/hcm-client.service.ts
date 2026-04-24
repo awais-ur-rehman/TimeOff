@@ -55,6 +55,13 @@ export class HcmClientService {
       );
       return (response.data as { hcmRequestId: string }).hcmRequestId;
     } catch (error: unknown) {
+      if (axios.isAxiosError(error) && error.response?.status === 409) {
+        const data = error.response.data as { hcmRequestId?: string } | undefined;
+        if (data?.hcmRequestId) {
+          this.logger.warn(`Duplicate HCM deduction accepted for idempotency key ${idempotencyKey}`);
+          return data.hcmRequestId;
+        }
+      }
       this.handleHcmError(error, 'deductBalance');
     }
   }
@@ -67,7 +74,6 @@ export class HcmClientService {
       );
     } catch (error: unknown) {
       if (axios.isAxiosError(error) && error.response?.status === 404) {
-        // Already reversed or never confirmed — treat as success
         this.logger.warn(`HCM request ${hcmRequestId} not found on reversal (treating as success)`);
         return;
       }

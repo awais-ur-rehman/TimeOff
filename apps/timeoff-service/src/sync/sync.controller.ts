@@ -30,7 +30,11 @@ export class SyncController {
 
   @Post('batch')
   @UseGuards(AuthGuard)
-  async batch(@Body() dto: BatchSyncDto) {
+  @HttpCode(HttpStatus.OK)
+  async batch(@Body() dto: BatchSyncDto, @Req() req: AuthReq) {
+    if (req.user.role !== 'admin') {
+      throw new ForbiddenException('Admin role required');
+    }
     return this.syncService.processBatchPayload(dto.records);
   }
 
@@ -49,6 +53,7 @@ export class SyncController {
 
   @Post('trigger')
   @UseGuards(AuthGuard)
+  @HttpCode(HttpStatus.OK)
   async trigger(@Req() req: AuthReq) {
     if (req.user.role !== 'admin') {
       throw new ForbiddenException('Admin role required');
@@ -58,7 +63,10 @@ export class SyncController {
 
   @Get('status')
   @UseGuards(AuthGuard)
-  async status() {
+  async status(@Req() req: AuthReq) {
+    if (req.user.role !== 'admin') {
+      throw new ForbiddenException('Admin role required');
+    }
     return this.syncService.getSyncStatus();
   }
 }

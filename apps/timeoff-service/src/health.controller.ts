@@ -19,7 +19,6 @@ export class HealthController {
       await this.dataSource.query('SELECT 1');
       dbConnected = true;
     } catch {
-      // db not reachable
     }
 
     const outboxQueueDepth = await this.outboxRepo.count({
