@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+# Runs the e2e test suite inside a container.
+# The tests are self-contained: they spin up an in-process NestJS app,
+# an in-memory SQLite database, and an in-process mock HCM server — no
+# network calls to the other Docker services at runtime.
+FROM --platform=linux/arm64 node:20-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+
+ENV NODE_ENV=test
+
+CMD ["npm", "run", "test:e2e"]
