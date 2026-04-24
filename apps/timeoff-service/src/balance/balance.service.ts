@@ -107,10 +107,6 @@ export class BalanceService {
     return { isDiscrepancy };
   }
 
-  /**
-   * Atomic conditional UPDATE — the single place a raw query is used.
-   * Returns true if the row was updated (i.e., balance was sufficient and version matched).
-   */
   async reserveBalance(
     employeeId: number,
     locationId: string,
@@ -134,11 +130,6 @@ export class BalanceService {
     return (result.affected ?? 0) > 0;
   }
 
-  /**
-   * High-level reservation with retry loop and ConflictException after 3 misses.
-   * Caller receives the committed QueryRunner transaction so it can write the request row
-   * in the same atomic operation.
-   */
   async reserveBalanceWithRetry(
     employeeId: number,
     locationId: string,

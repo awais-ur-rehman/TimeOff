@@ -19,8 +19,6 @@ import { HcmService } from './hcm.service';
 export class HcmController {
   constructor(private readonly hcmService: HcmService) {}
 
-  // ── Balance endpoints ──────────────────────────────────────────────────────
-
   @Get('balances/:employeeId/:locationId/:leaveType')
   getBalance(
     @Param('employeeId') employeeId: string,
@@ -43,8 +41,6 @@ export class HcmController {
     this.hcmService.seedBalance(body.employeeId, body.locationId, body.leaveType, body.totalDays);
     return { ok: true };
   }
-
-  // ── Request (deduction) endpoints ─────────────────────────────────────────
 
   @Post('requests')
   deductBalance(
@@ -76,8 +72,6 @@ export class HcmController {
     return this.hcmService.getDeduction(id);
   }
 
-  // ── Simulation endpoints (test helpers) ───────────────────────────────────
-
   @Post('simulate/anniversary/:employeeId')
   simulateAnniversary(
     @Param('employeeId') employeeId: string,
@@ -89,8 +83,6 @@ export class HcmController {
 
   @Post('simulate/error-rate')
   setErrorRate() {
-    // Error rate is read from config on each request; no persistent setter needed.
-    // This endpoint exists for mock-hcm compatibility with the test helper.
     return { ok: true };
   }
 
@@ -99,8 +91,6 @@ export class HcmController {
   resetState(): void {
     this.hcmService.reset();
   }
-
-  // ── Health check ──────────────────────────────────────────────────────────
 
   @Get('health')
   health(): { status: string } {

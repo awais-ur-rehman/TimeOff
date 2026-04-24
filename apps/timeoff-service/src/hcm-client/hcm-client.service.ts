@@ -74,7 +74,6 @@ export class HcmClientService {
       );
     } catch (error: unknown) {
       if (axios.isAxiosError(error) && error.response?.status === 404) {
-        // Already reversed or never confirmed — treat as success
         this.logger.warn(`HCM request ${hcmRequestId} not found on reversal (treating as success)`);
         return;
       }

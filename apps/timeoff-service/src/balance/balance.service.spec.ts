@@ -5,8 +5,6 @@ import {
 } from '@nestjs/common';
 import { BalanceService } from './balance.service';
 
-// ── helpers ────────────────────────────────────────────────────────────────
-
 function makeBalance(overrides: Record<string, unknown> = {}) {
   return {
     id: 1,
@@ -30,11 +28,7 @@ function makeService(overrides: { repo?: unknown; ds?: unknown } = {}) {
   );
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────
-
 describe('BalanceService', () => {
-  // ── Pure helpers ──────────────────────────────────────────────────────────
-
   describe('calculateEffectiveAvailable', () => {
     let svc: BalanceService;
     beforeEach(() => { svc = makeService(); });
@@ -73,8 +67,6 @@ describe('BalanceService', () => {
     });
   });
 
-  // ── getByEmployee ──────────────────────────────────────────────────────────
-
   describe('getByEmployee', () => {
     it('returns balances with effectiveAvailable computed', async () => {
       const balance = makeBalance({ totalDays: 10, usedDays: 3, reservedDays: 2 });
@@ -95,8 +87,6 @@ describe('BalanceService', () => {
     });
   });
 
-  // ── getByEmployeeAndLocation ───────────────────────────────────────────────
-
   describe('getByEmployeeAndLocation', () => {
     it('returns balances with effectiveAvailable', async () => {
       const balance = makeBalance({ totalDays: 8, usedDays: 2, reservedDays: 1 });
@@ -113,8 +103,6 @@ describe('BalanceService', () => {
       await expect(svc.getByEmployeeAndLocation(99, 'LOC99')).rejects.toThrow(NotFoundException);
     });
   });
-
-  // ── upsertFromHcm ──────────────────────────────────────────────────────────
 
   describe('upsertFromHcm', () => {
     it('creates a new balance when none exists', async () => {
@@ -167,8 +155,6 @@ describe('BalanceService', () => {
     });
   });
 
-  // ── reserveBalance ─────────────────────────────────────────────────────────
-
   describe('reserveBalance', () => {
     it('returns true when UPDATE affects 1 row', async () => {
       const qr = { query: jest.fn().mockResolvedValue({ affected: 1, records: [], raw: 1 }) };
@@ -194,8 +180,6 @@ describe('BalanceService', () => {
       expect(result).toBe(false);
     });
   });
-
-  // ── reserveBalanceWithRetry ────────────────────────────────────────────────
 
   describe('reserveBalanceWithRetry', () => {
     it('succeeds on the first attempt', async () => {
@@ -253,7 +237,6 @@ describe('BalanceService', () => {
       const balance = makeBalance({ totalDays: 10, usedDays: 0, reservedDays: 0, version: 0 });
       const qr = {
         manager: { findOne: jest.fn().mockResolvedValue(balance) },
-        // Always return 0 affected (perpetual version conflict)
         query: jest.fn().mockResolvedValue({ affected: 0, records: [], raw: 0 }),
       };
       const svc = makeService();
@@ -261,7 +244,6 @@ describe('BalanceService', () => {
       await expect(
         svc.reserveBalanceWithRetry(1, 'LOC1', 'ANNUAL', 5, qr as any),
       ).rejects.toThrow(ConflictException);
-      // MAX_ATTEMPTS = 3
       expect(qr.query).toHaveBeenCalledTimes(3);
     });
 
@@ -272,7 +254,6 @@ describe('BalanceService', () => {
         manager: {
           findOne: jest.fn().mockImplementation(() => {
             findOneCallCount += 1;
-            // Return balance for the 3 retry reads, but null for the final read after the loop
             return findOneCallCount <= 3 ? Promise.resolve(balance) : Promise.resolve(null);
           }),
         },
@@ -285,8 +266,6 @@ describe('BalanceService', () => {
       ).rejects.toThrow(ConflictException);
     });
   });
-
-  // ── releaseReserved ────────────────────────────────────────────────────────
 
   describe('releaseReserved', () => {
     it('calls queryRunner.query with the correct UPDATE', async () => {
