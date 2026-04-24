@@ -82,30 +82,25 @@ describe('Full happy path', () => {
   beforeEach(async () => { await resetState(ctx); });
 
   it('employee submits request, manager approves, HCM confirms, balance moves from reserved to used', async () => {
-    // 1. Submit 3-day request
     const submitRes = await submitRequest(ctx, 3);
     expect(submitRes.status).toBe(201);
     expect(submitRes.body.status).toBe('PENDING');
 
     const requestId: number = submitRes.body.id;
 
-    // 2. Balance shows 7 effective available (10 - 3 reserved)
     const balance1 = await getBalance(ctx);
     expect(Number(balance1.effectiveAvailable)).toBe(7);
     expect(Number(balance1.reservedDays)).toBe(3);
 
-    // 3. Manager approves
     const approveRes = await approveRequest(ctx, requestId);
     expect(approveRes.status).toBe(200);
     expect(approveRes.body.status).toBe('APPROVED_PENDING_HCM');
 
-    // 4. Wait for outbox processor to fire and HCM to confirm
     await waitFor(async () => {
       const req = await getRequest(ctx, requestId);
       return req.status === 'APPROVED';
     }, 3000, 100);
 
-    // 5. Assert final state
     const finalReq = await getRequest(ctx, requestId);
     expect(finalReq.status).toBe('APPROVED');
     expect(finalReq.hcmRequestId).toBeTruthy();
@@ -237,12 +232,10 @@ describe('Employee cancellation before approval', () => {
 
   it('returns 409 when request is already in a terminal state', async () => {
     const { body: req } = await submitRequest(ctx, 3);
-    // Reject first (puts it in terminal state)
     await request(ctx.app.getHttpServer())
       .patch(`/requests/${req.id}/reject`)
       .set(managerHeaders(ctx))
       .send({ reason: 'No capacity' });
-    // Try to cancel the already-rejected request
     const delRes = await request(ctx.app.getHttpServer())
       .delete(`/requests/${req.id}`)
       .set(employeeHeaders(ctx));
@@ -323,7 +316,7 @@ describe('HCM failure on deduction', () => {
   afterAll(async () => { await teardownTestApp(ctx); });
   beforeEach(async () => {
     await resetState(ctx);
-    ctx.hcm.setErrorRate(1.0); // All HCM calls fail
+    ctx.hcm.setErrorRate(1.0);
   });
 
   it('request stays in APPROVED_PENDING_HCM when HCM returns 500', async () => {

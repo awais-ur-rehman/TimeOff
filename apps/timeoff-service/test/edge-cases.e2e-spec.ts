@@ -26,7 +26,6 @@ describe('Edge cases', () => {
 
   it('requesting 0 days returns 400', async () => {
     const ctx = app as unknown as TestContext;
-    // endDate before startDate yields 0 or negative days — service rejects with 400
     const res = await request(app.getHttpServer())
       .post('/requests')
       .set(employeeHeaders(ctx))
@@ -102,7 +101,6 @@ describe('Edge cases', () => {
       .send({ employeeId: ctx.employeeId, locationId: ctx.locationId, leaveType: ctx.leaveType, startDate: futureDate(1), endDate: futureDate(3) });
     expect(submitRes.status).toBe(201);
 
-    // Manager with different location tries to approve
     const wrongLocationManagerHeaders = {
       'x-employee-id': String(ctx.managerId),
       'x-role': 'manager',
@@ -132,7 +130,6 @@ describe('Edge cases', () => {
       .patch(`/requests/${submitRes.body.id}/approve`)
       .set(managerHeaders(ctx));
 
-    // Try to approve again
     const secondApprove = await request(app.getHttpServer())
       .patch(`/requests/${submitRes.body.id}/approve`)
       .set(managerHeaders(ctx));

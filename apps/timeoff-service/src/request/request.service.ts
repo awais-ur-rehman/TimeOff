@@ -239,18 +239,15 @@ export class RequestService {
   ): Promise<TimeOffRequest> {
     const request = await this.findOrFail(requestId, queryRunner.manager);
 
-    // Already completed (idempotent replay)
     if (request.status === RequestStatus.APPROVED) {
       return request;
     }
 
-    // Request was cancelled while APPROVED_PENDING_HCM — store hcmRequestId for reversal
     if (request.status === RequestStatus.CANCELLED) {
       await queryRunner.manager.update(TimeOffRequest, requestId, { hcmRequestId });
       return this.findOrFail(requestId, queryRunner.manager);
     }
 
-    // Normal path (APPROVED_PENDING_HCM → APPROVED) or recovery (FAILED → APPROVED)
     const updatedRequest = await this.transitionRequest(
       queryRunner.manager,
       requestId,
@@ -273,7 +270,6 @@ export class RequestService {
   async failRequestFromOutbox(queryRunner: QueryRunner, requestId: number): Promise<TimeOffRequest> {
     const request = await this.findOrFail(requestId, queryRunner.manager);
 
-    // Already in a terminal state — nothing to do
     if (
       request.status === RequestStatus.FAILED ||
       request.status === RequestStatus.CANCELLED ||

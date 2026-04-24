@@ -300,8 +300,6 @@ export class SyncService {
     };
   }
 
-  // Marks active requests as noteworthy when a discrepancy is detected.
-  // Does not change request status — surfaces the issue for human review.
   private async flagActiveRequests(
     employeeId: number,
     qr: { manager: { find: (entity: unknown, opts: unknown) => Promise<TimeOffRequest[]> } },
