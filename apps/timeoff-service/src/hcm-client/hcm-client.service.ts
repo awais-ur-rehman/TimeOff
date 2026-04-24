@@ -55,6 +55,13 @@ export class HcmClientService {
       );
       return (response.data as { hcmRequestId: string }).hcmRequestId;
     } catch (error: unknown) {
+      if (axios.isAxiosError(error) && error.response?.status === 409) {
+        const data = error.response.data as { hcmRequestId?: string } | undefined;
+        if (data?.hcmRequestId) {
+          this.logger.warn(`Duplicate HCM deduction accepted for idempotency key ${idempotencyKey}`);
+          return data.hcmRequestId;
+        }
+      }
       this.handleHcmError(error, 'deductBalance');
     }
   }

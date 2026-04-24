@@ -154,9 +154,9 @@ export class BalanceService {
       });
 
       if (!balance) {
-        throw new UnprocessableEntityException(
-          `No leave balance record found for employee ${employeeId}, location ${locationId}, type ${leaveType}`,
-        );
+        throw new UnprocessableEntityException({
+          message: `No leave balance record found for employee ${employeeId}, location ${locationId}, type ${leaveType}`,
+        });
       }
 
       const effective = this.calculateEffectiveAvailable(
@@ -166,9 +166,10 @@ export class BalanceService {
       );
 
       if (effective < days) {
-        throw new UnprocessableEntityException(
-          `Insufficient balance. Requested: ${days}, available: ${effective}`,
-        );
+        throw new UnprocessableEntityException({
+          message: `Insufficient balance. Requested: ${days}, available: ${effective}`,
+          effectiveAvailable: effective,
+        });
       }
 
       const reserved = await this.reserveBalance(
@@ -200,9 +201,10 @@ export class BalanceService {
         )
       : 0;
 
-    throw new ConflictException(
-      `Balance reservation failed after ${MAX_ATTEMPTS} attempts. Current effective balance: ${effectiveNow}`,
-    );
+    throw new ConflictException({
+      message: `Balance reservation failed after ${MAX_ATTEMPTS} attempts. Current effective balance: ${effectiveNow}`,
+      effectiveAvailable: effectiveNow,
+    });
   }
 
   async releaseReserved(

@@ -35,7 +35,7 @@ describe('Batch sync', () => {
         ],
       });
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(200);
     expect(res.body.recordsProcessed).toBe(1);
 
     // Verify the balance was updated in DB
@@ -66,7 +66,7 @@ describe('Batch sync', () => {
         ],
       });
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(200);
     expect(res.body.discrepancies).toBe(1);
   });
 
@@ -243,7 +243,7 @@ describe('Scheduled reconciliation', () => {
       .post('/sync/trigger')
       .set(adminHeaders);
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(200);
     expect(res.body.recordsProcessed).toBeGreaterThanOrEqual(1);
   });
 

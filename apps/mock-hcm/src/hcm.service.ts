@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HcmState, BalanceRecord, DeductionRecord } from './hcm-state';
 
@@ -50,14 +50,27 @@ export class HcmService {
     days: number,
     idempotencyKey: string | undefined,
   ): { hcmRequestId: string; statusCode: 200 | 201 } {
-    // Idempotency check
     if (idempotencyKey && this.state.deductions.has(idempotencyKey)) {
       const existing = this.state.deductions.get(idempotencyKey)!;
       return { hcmRequestId: existing.hcmRequestId, statusCode: 200 };
     }
 
+    const key = this.state.balanceKey(employeeId, locationId, leaveType);
+    const balance = this.state.balances.get(key);
+    if (!balance) {
+      throw new NotFoundException('Balance not found');
+    }
+    if (balance.totalDays < days) {
+      throw new UnprocessableEntityException('Insufficient balance');
+    }
+
     const hcmRequestId = this.state.nextRequestId();
     const record: DeductionRecord = { employeeId, locationId, leaveType, days, hcmRequestId };
+    this.state.balances.set(key, {
+      ...balance,
+      totalDays: balance.totalDays - days,
+      hcmVersion: String(Number(balance.hcmVersion) + 1),
+    });
 
     if (idempotencyKey) this.state.deductions.set(idempotencyKey, record);
     this.state.requestIndex.set(hcmRequestId, idempotencyKey ?? hcmRequestId);
@@ -68,6 +81,23 @@ export class HcmService {
   reverseDeduction(hcmRequestId: string): void {
     const idemKey = this.state.requestIndex.get(hcmRequestId);
     if (!idemKey) throw new NotFoundException('HCM request not found');
+    const deduction = this.state.deductions.get(idemKey);
+    if (deduction) {
+      const key = this.state.balanceKey(
+        deduction.employeeId,
+        deduction.locationId,
+        deduction.leaveType,
+      );
+      const balance = this.state.balances.get(key);
+      if (!balance) {
+        throw new NotFoundException('Balance not found');
+      }
+      this.state.balances.set(key, {
+        ...balance,
+        totalDays: balance.totalDays + deduction.days,
+        hcmVersion: String(Number(balance.hcmVersion) + 1),
+      });
+    }
     this.state.deductions.delete(idemKey);
     this.state.requestIndex.delete(hcmRequestId);
   }

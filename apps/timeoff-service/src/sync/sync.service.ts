@@ -3,7 +3,9 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import { Cron } from '@nestjs/schedule';
 import { Repository, DataSource, LessThan, In } from 'typeorm';
 import { LeaveBalance } from '../balance/balance.entity';
 import { TimeOffRequest } from '../request/request.entity';
@@ -44,7 +46,17 @@ export class SyncService {
     private readonly balanceService: BalanceService,
     private readonly hcmClient: HcmClientService,
     private readonly dataSource: DataSource,
+    private readonly configService: ConfigService,
   ) {}
+
+  @Cron(process.env.RECONCILIATION_CRON || '*/15 * * * *')
+  async handleScheduledReconciliation(): Promise<void> {
+    try {
+      await this.triggerReconciliation();
+    } catch (err) {
+      this.logger.error('Scheduled reconciliation failed', err);
+    }
+  }
 
   async processBatchPayload(
     records: BatchRecord[],

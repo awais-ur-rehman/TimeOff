@@ -27,11 +27,12 @@ const MANAGER_ID = 100;
 const TOTAL_DAYS = 10;
 
 export async function setupTestApp(): Promise<TestContext> {
-  const hcm = await acquireMockHcm(3099);
+  // Bind mock HCM to an ephemeral port (0) to avoid EADDRINUSE.
+  const hcm = await acquireMockHcm(0);
 
   process.env.NODE_ENV = 'test';
   process.env.DATABASE_PATH = ':memory:';
-  process.env.HCM_BASE_URL = 'http://localhost:3099';
+  process.env.HCM_BASE_URL = `http://localhost:${hcm.port}`;
   process.env.HCM_SECRET = 'test-secret';
   process.env.OUTBOX_POLL_INTERVAL_MS = '100';
   process.env.HCM_REQUEST_TIMEOUT_MS = '2000';
@@ -64,7 +65,9 @@ export async function setupTestApp(): Promise<TestContext> {
 }
 
 export async function teardownTestApp(ctx: INestApplication): Promise<void> {
-  await ctx.close();
+  if (ctx) {
+    await ctx.close();
+  }
   await releaseMockHcm();
 }
 
@@ -96,6 +99,11 @@ export async function resetState(ctx: INestApplication): Promise<void> {
 
   if (tc.hcm) {
     tc.hcm.resetState();
+    // Seed mock HCM so outbox HCM_DEDUCT calls find the balance.
+    // The outbox payload uses the local DB employee ID, so seed with that.
+    if (tc.employeeId) {
+      tc.hcm.seedBalance(tc.employeeId, LOCATION_ID, LEAVE_TYPE, TOTAL_DAYS);
+    }
   }
 }
 

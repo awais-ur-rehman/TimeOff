@@ -42,11 +42,10 @@ export class RequestController {
 
   @Get('team')
   async listTeam(
-    @Query('managerId', ParseIntPipe) managerId: number,
     @Query('status') status: RequestStatus | undefined,
     @Req() req: AuthReq,
   ) {
-    return this.requestService.listTeamRequests(managerId, status);
+    return this.requestService.listTeamRequests(req.user, status);
   }
 
   @Get(':id')

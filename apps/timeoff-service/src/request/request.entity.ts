@@ -33,14 +33,14 @@ export class TimeOffRequest {
   @Column({ default: RequestStatus.PENDING })
   status: RequestStatus;
 
-  @Column({ nullable: true })
-  managerId: number;
+  @Column('integer', { nullable: true })
+  managerId: number | null;
 
-  @Column({ nullable: true, type: 'text' })
-  rejectionReason: string;
+  @Column('text', { nullable: true })
+  rejectionReason: string | null;
 
-  @Column({ nullable: true })
-  hcmRequestId: string;
+  @Column('text', { nullable: true })
+  hcmRequestId: string | null;
 
   @Column({ default: 0 })
   version: number;

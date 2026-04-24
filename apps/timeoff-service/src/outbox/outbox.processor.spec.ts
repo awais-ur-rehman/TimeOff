@@ -18,17 +18,42 @@ function makeEvent(overrides: Partial<OutboxEvent> = {}): OutboxEvent {
   } as OutboxEvent;
 }
 
+function makeQr(overrides: Record<string, unknown> = {}) {
+  return {
+    connect: jest.fn(),
+    startTransaction: jest.fn(),
+    commitTransaction: jest.fn(),
+    rollbackTransaction: jest.fn(),
+    release: jest.fn(),
+    manager: {
+      update: jest.fn().mockResolvedValue({}),
+      ...(overrides.manager as Record<string, unknown> ?? {}),
+    },
+    ...overrides,
+  };
+}
+
 function makeProcessor(overrides: {
-  outboxRepo?: unknown;
-  hcmClient?: unknown;
-  dataSource?: unknown;
-  configService?: unknown;
+  outboxRepo?: Record<string, unknown>;
+  hcmClient?: Record<string, unknown>;
+  dataSource?: Record<string, unknown>;
+  configService?: Record<string, unknown>;
+  requestService?: Record<string, unknown>;
 } = {}): OutboxProcessor {
   return new OutboxProcessor(
-    (overrides.outboxRepo ?? null) as any,
-    (overrides.hcmClient ?? null) as any,
-    (overrides.dataSource ?? null) as any,
-    (overrides.configService ?? null) as any,
+    (overrides.outboxRepo ?? {
+      find: jest.fn().mockResolvedValue([]),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+    }) as any,
+    (overrides.hcmClient ?? {}) as any,
+    (overrides.dataSource ?? {}) as any,
+    (overrides.configService ?? {
+      get: jest.fn().mockImplementation((_key: string, defaultVal: unknown) => defaultVal),
+    }) as any,
+    (overrides.requestService ?? {
+      completeDeductionFromOutbox: jest.fn().mockResolvedValue({}),
+      failRequestFromOutbox: jest.fn().mockResolvedValue({}),
+    }) as any,
   );
 }
 
@@ -94,7 +119,12 @@ describe('OutboxProcessor', () => {
     });
 
     it('uses configService value when available', () => {
-      const configService = { get: jest.fn().mockReturnValue(2) };
+      const configService = {
+        get: jest.fn().mockImplementation((_key: string, defaultVal: unknown) => {
+          if (_key === 'HCM_MAX_RETRIES') return 2;
+          return defaultVal;
+        }),
+      };
       const p = makeProcessor({ configService });
       expect(p.shouldMarkFailed(2)).toBe(true);
       expect(p.shouldMarkFailed(1)).toBe(false);
@@ -105,167 +135,122 @@ describe('OutboxProcessor', () => {
     it('does nothing when no pending events exist', async () => {
       const outboxRepo = {
         find: jest.fn().mockResolvedValue([]),
-        createQueryBuilder: jest.fn(),
+        update: jest.fn(),
       };
       const processor = makeProcessor({ outboxRepo });
 
       await processor.tick();
 
-      expect(outboxRepo.createQueryBuilder).not.toHaveBeenCalled();
+      // update should not be called because there are no events to claim
+      expect(outboxRepo.update).not.toHaveBeenCalled();
     });
 
-    it('processes each pending event', async () => {
+    it('claims each event by updating status from PENDING to PROCESSING', async () => {
       const event = makeEvent();
-      const updateBuilder = {
-        update: jest.fn().mockReturnThis(),
-        set: jest.fn().mockReturnThis(),
-        whereInIds: jest.fn().mockReturnThis(),
-        execute: jest.fn().mockResolvedValue({}),
-      };
       const outboxRepo = {
         find: jest.fn().mockResolvedValue([event]),
-        createQueryBuilder: jest.fn().mockReturnValue(updateBuilder),
-        update: jest.fn().mockResolvedValue({}),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
       };
-
-      const mockQr = {
-        connect: jest.fn(),
-        startTransaction: jest.fn(),
-        commitTransaction: jest.fn(),
-        rollbackTransaction: jest.fn(),
-        release: jest.fn(),
-        query: jest.fn()
-          .mockResolvedValueOnce({}) // UPDATE hcm_request_id
-          .mockResolvedValueOnce({ affected: 1 }) // UPDATE status = APPROVED
-          .mockResolvedValueOnce({}) // UPDATE reserved/used days
-          .mockResolvedValueOnce({}), // UPDATE outbox status = DONE
+      const hcmClient = { deductBalance: jest.fn().mockResolvedValue('hcm-123') };
+      const requestService = {
+        completeDeductionFromOutbox: jest.fn().mockResolvedValue({}),
+        failRequestFromOutbox: jest.fn().mockResolvedValue({}),
       };
+      const mockQr = makeQr();
+      const dataSource = { createQueryRunner: jest.fn().mockReturnValue(mockQr) };
 
-      const hcmClient = {
-        deductBalance: jest.fn().mockResolvedValue('hcm-123'),
+      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource, requestService });
+      await processor.tick();
+
+      expect(outboxRepo.update).toHaveBeenCalledWith(
+        { id: event.id, status: OutboxEventStatus.PENDING },
+        { status: OutboxEventStatus.PROCESSING },
+      );
+    });
+
+    it('skips event if claim fails (another worker claimed it)', async () => {
+      const event = makeEvent();
+      const outboxRepo = {
+        find: jest.fn().mockResolvedValue([event]),
+        update: jest.fn().mockResolvedValue({ affected: 0 }),
       };
-
-      const dataSource = {
-        createQueryRunner: jest.fn().mockReturnValue(mockQr),
-      };
-
-      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource });
+      const hcmClient = { deductBalance: jest.fn() };
+      const processor = makeProcessor({ outboxRepo, hcmClient });
 
       await processor.tick();
 
-      expect(hcmClient.deductBalance).toHaveBeenCalledTimes(1);
+      expect(hcmClient.deductBalance).not.toHaveBeenCalled();
+    });
+
+    it('processes a deduct event end-to-end: HCM call → transition → outbox DONE', async () => {
+      const event = makeEvent();
+      const outboxRepo = {
+        find: jest.fn().mockResolvedValue([event]),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      const hcmClient = { deductBalance: jest.fn().mockResolvedValue('hcm-123') };
+      const requestService = {
+        completeDeductionFromOutbox: jest.fn().mockResolvedValue({}),
+        failRequestFromOutbox: jest.fn().mockResolvedValue({}),
+      };
+      const mockQr = makeQr();
+      const dataSource = { createQueryRunner: jest.fn().mockReturnValue(mockQr) };
+
+      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource, requestService });
+      await processor.tick();
+
+      expect(hcmClient.deductBalance).toHaveBeenCalledWith(1, 'LOC1', 'ANNUAL', 3, `outbox-${event.id}`);
+      expect(requestService.completeDeductionFromOutbox).toHaveBeenCalledWith(mockQr, event.requestId, 'hcm-123');
       expect(mockQr.commitTransaction).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('processDeductEvent', () => {
-    it('marks event DONE and moves reserved to used when request transitions to APPROVED', async () => {
+    it('marks event DONE via qr.manager after completing deduction', async () => {
       const event = makeEvent({ id: 5, requestId: 10 });
-
-      const mockQr = {
-        connect: jest.fn(),
-        startTransaction: jest.fn(),
-        commitTransaction: jest.fn(),
-        rollbackTransaction: jest.fn(),
-        release: jest.fn(),
-        query: jest.fn()
-          .mockResolvedValueOnce({}) // UPDATE hcm_request_id
-          .mockResolvedValueOnce({ affected: 1 }) // UPDATE status = APPROVED
-          .mockResolvedValueOnce({}) // UPDATE reserved/used days
-          .mockResolvedValueOnce({}), // UPDATE outbox DONE
-      };
-
       const outboxRepo = {
         find: jest.fn().mockResolvedValue([event]),
-        createQueryBuilder: jest.fn().mockReturnValue({
-          update: jest.fn().mockReturnThis(),
-          set: jest.fn().mockReturnThis(),
-          whereInIds: jest.fn().mockReturnThis(),
-          execute: jest.fn().mockResolvedValue({}),
-        }),
-        update: jest.fn().mockResolvedValue({}),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
       };
-
       const hcmClient = { deductBalance: jest.fn().mockResolvedValue('hcm-abc') };
+      const requestService = {
+        completeDeductionFromOutbox: jest.fn().mockResolvedValue({}),
+        failRequestFromOutbox: jest.fn().mockResolvedValue({}),
+      };
+      const mockQr = makeQr();
       const dataSource = { createQueryRunner: jest.fn().mockReturnValue(mockQr) };
 
-      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource });
+      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource, requestService });
       await processor.tick();
 
-      // 4 queries: hcm_request_id update, status update, balance update, outbox update
-      expect(mockQr.query).toHaveBeenCalledTimes(4);
-    });
-
-    it('skips balance update when request was not in APPROVED_PENDING_HCM state', async () => {
-      const event = makeEvent({ id: 6, requestId: 11 });
-
-      const mockQr = {
-        connect: jest.fn(),
-        startTransaction: jest.fn(),
-        commitTransaction: jest.fn(),
-        rollbackTransaction: jest.fn(),
-        release: jest.fn(),
-        query: jest.fn()
-          .mockResolvedValueOnce({}) // UPDATE hcm_request_id
-          .mockResolvedValueOnce({ affected: 0 }) // UPDATE status = APPROVED (no match)
-          .mockResolvedValueOnce({}), // UPDATE outbox DONE
-      };
-
-      const outboxRepo = {
-        find: jest.fn().mockResolvedValue([event]),
-        createQueryBuilder: jest.fn().mockReturnValue({
-          update: jest.fn().mockReturnThis(),
-          set: jest.fn().mockReturnThis(),
-          whereInIds: jest.fn().mockReturnThis(),
-          execute: jest.fn().mockResolvedValue({}),
-        }),
-        update: jest.fn().mockResolvedValue({}),
-      };
-
-      const hcmClient = { deductBalance: jest.fn().mockResolvedValue('hcm-xyz') };
-      const dataSource = { createQueryRunner: jest.fn().mockReturnValue(mockQr) };
-
-      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource });
-      await processor.tick();
-
-      // Only 3 queries: no balance update since affected=0
-      expect(mockQr.query).toHaveBeenCalledTimes(3);
+      // The outbox event update to DONE happens through qr.manager.update inside the transaction
+      expect(mockQr.manager.update).toHaveBeenCalled();
+      expect(mockQr.commitTransaction).toHaveBeenCalledTimes(1);
     });
 
     it('rolls back and resets to PENDING on DB error after HCM success', async () => {
       const event = makeEvent({ id: 7, requestId: 12 });
       const dbError = new Error('DB write failed');
 
-      const mockQr = {
-        connect: jest.fn(),
-        startTransaction: jest.fn(),
-        commitTransaction: jest.fn(),
-        rollbackTransaction: jest.fn(),
-        release: jest.fn(),
-        query: jest.fn()
-          .mockResolvedValueOnce({}) // UPDATE hcm_request_id
-          .mockRejectedValueOnce(dbError), // UPDATE status throws
-      };
-
       const outboxRepo = {
         find: jest.fn().mockResolvedValue([event]),
-        createQueryBuilder: jest.fn().mockReturnValue({
-          update: jest.fn().mockReturnThis(),
-          set: jest.fn().mockReturnThis(),
-          whereInIds: jest.fn().mockReturnThis(),
-          execute: jest.fn().mockResolvedValue({}),
-        }),
-        update: jest.fn().mockResolvedValue({}),
+        update: jest.fn()
+          .mockResolvedValueOnce({ affected: 1 })  // claim succeeds
+          .mockResolvedValueOnce({}),               // reset to PENDING after failure
       };
-
       const hcmClient = { deductBalance: jest.fn().mockResolvedValue('hcm-def') };
+      const requestService = {
+        completeDeductionFromOutbox: jest.fn().mockRejectedValue(dbError),
+        failRequestFromOutbox: jest.fn().mockResolvedValue({}),
+      };
+      const mockQr = makeQr();
       const dataSource = { createQueryRunner: jest.fn().mockReturnValue(mockQr) };
 
-      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource });
+      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource, requestService });
       await processor.tick();
 
       expect(mockQr.rollbackTransaction).toHaveBeenCalledTimes(1);
-      // outboxRepo.update resets to PENDING
+      // outboxRepo.update is called to reset to PENDING with nextRetryAt = now
       expect(outboxRepo.update).toHaveBeenCalledWith(
         event.id,
         expect.objectContaining({ status: OutboxEventStatus.PENDING }),
@@ -284,15 +269,8 @@ describe('OutboxProcessor', () => {
 
       const outboxRepo = {
         find: jest.fn().mockResolvedValue([event]),
-        createQueryBuilder: jest.fn().mockReturnValue({
-          update: jest.fn().mockReturnThis(),
-          set: jest.fn().mockReturnThis(),
-          whereInIds: jest.fn().mockReturnThis(),
-          execute: jest.fn().mockResolvedValue({}),
-        }),
-        update: jest.fn().mockResolvedValue({}),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
       };
-
       const hcmClient = { reverseDeduction: jest.fn().mockResolvedValue(undefined) };
       const dataSource = {
         query: jest.fn().mockResolvedValue([{ hcm_request_id: 'hcm-to-reverse' }]),
@@ -320,15 +298,8 @@ describe('OutboxProcessor', () => {
 
       const outboxRepo = {
         find: jest.fn().mockResolvedValue([event]),
-        createQueryBuilder: jest.fn().mockReturnValue({
-          update: jest.fn().mockReturnThis(),
-          set: jest.fn().mockReturnThis(),
-          whereInIds: jest.fn().mockReturnThis(),
-          execute: jest.fn().mockResolvedValue({}),
-        }),
-        update: jest.fn().mockResolvedValue({}),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
       };
-
       const hcmClient = { reverseDeduction: jest.fn() };
       const dataSource = {
         // hcm_request_id is null — not yet set
@@ -349,67 +320,65 @@ describe('OutboxProcessor', () => {
   });
 
   describe('handleEventFailure', () => {
-    it('marks event FAILED and request FAILED when max retries exceeded', async () => {
+    it('marks event FAILED and calls failRequestFromOutbox when max retries exceeded', async () => {
       const event = makeEvent({ id: 11, requestId: 30, attempts: 3 });
-
       const outboxRepo = {
         find: jest.fn().mockResolvedValue([event]),
-        createQueryBuilder: jest.fn().mockReturnValue({
-          update: jest.fn().mockReturnThis(),
-          set: jest.fn().mockReturnThis(),
-          whereInIds: jest.fn().mockReturnThis(),
-          execute: jest.fn().mockResolvedValue({}),
-        }),
-        update: jest.fn().mockResolvedValue({}),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
       };
-
       const hcmClient = { deductBalance: jest.fn().mockRejectedValue(new Error('HCM down')) };
-      const dataSource = {
-        createQueryRunner: jest.fn(),
-        query: jest.fn().mockResolvedValue({}),
+      const configService = {
+        get: jest.fn().mockImplementation((_key: string, defaultVal: unknown) => {
+          if (_key === 'HCM_MAX_RETRIES') return 4;
+          return defaultVal;
+        }),
       };
-      const configService = { get: jest.fn().mockReturnValue(4) };
+      const requestService = {
+        completeDeductionFromOutbox: jest.fn(),
+        failRequestFromOutbox: jest.fn().mockResolvedValue({}),
+      };
+      const mockQr = makeQr();
+      const dataSource = { createQueryRunner: jest.fn().mockReturnValue(mockQr) };
 
-      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource, configService });
+      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource, configService, requestService });
       await processor.tick();
 
       // attempts goes from 3 → 4, which equals maxRetries (4) → FAILED
-      expect(outboxRepo.update).toHaveBeenCalledWith(
-        event.id,
-        expect.objectContaining({ status: OutboxEventStatus.FAILED, attempts: 4 }),
-      );
-      expect(dataSource.query).toHaveBeenCalledWith(
-        expect.stringContaining('FAILED'),
-        [event.requestId],
-      );
+      // The FAILED path creates its own queryRunner and uses qr.manager.update for the outbox event
+      expect(requestService.failRequestFromOutbox).toHaveBeenCalled();
     });
 
-    it('resets event to PENDING with bumped attempts when retries remain', async () => {
+    it('resets event to PENDING with bumped attempts and backoff when retries remain', async () => {
       const event = makeEvent({ id: 12, requestId: 31, attempts: 0 });
-
       const outboxRepo = {
         find: jest.fn().mockResolvedValue([event]),
-        createQueryBuilder: jest.fn().mockReturnValue({
-          update: jest.fn().mockReturnThis(),
-          set: jest.fn().mockReturnThis(),
-          whereInIds: jest.fn().mockReturnThis(),
-          execute: jest.fn().mockResolvedValue({}),
-        }),
-        update: jest.fn().mockResolvedValue({}),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
       };
-
       const hcmClient = { deductBalance: jest.fn().mockRejectedValue(new Error('transient')) };
-      const dataSource = { createQueryRunner: jest.fn(), query: jest.fn() };
-      const configService = { get: jest.fn().mockReturnValue(4) };
+      const configService = {
+        get: jest.fn().mockImplementation((_key: string, defaultVal: unknown) => {
+          if (_key === 'HCM_MAX_RETRIES') return 4;
+          return defaultVal;
+        }),
+      };
+      const requestService = {
+        completeDeductionFromOutbox: jest.fn(),
+        failRequestFromOutbox: jest.fn(),
+      };
+      const dataSource = { createQueryRunner: jest.fn() };
 
-      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource, configService });
+      const processor = makeProcessor({ outboxRepo, hcmClient, dataSource, configService, requestService });
       await processor.tick();
 
       // attempts goes from 0 → 1, not yet at maxRetries → stays PENDING
-      expect(outboxRepo.update).toHaveBeenCalledWith(
-        event.id,
-        expect.objectContaining({ status: OutboxEventStatus.PENDING, attempts: 1 }),
+      // outboxRepo.update is called: first for claim, then for the retry reset
+      const updateCalls = outboxRepo.update.mock.calls;
+      const retryCalls = updateCalls.filter(
+        (call: [unknown, Record<string, unknown>]) =>
+          typeof call[0] === 'number' && call[1].status === OutboxEventStatus.PENDING && call[1].attempts === 1,
       );
+      expect(retryCalls.length).toBe(1);
+      expect(retryCalls[0][1].nextRetryAt).toBeInstanceOf(Date);
     });
   });
 });

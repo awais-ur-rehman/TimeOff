@@ -35,8 +35,8 @@ describe('RequestStateMachine', () => {
       expect(canTransition(APH, C)).toBe(true);
     });
 
-    it('allows APPROVED to CANCELLED', () => {
-      expect(canTransition(A, C)).toBe(true);
+    it('rejects APPROVED to CANCELLED (APPROVED is terminal)', () => {
+      expect(canTransition(A, C)).toBe(false);
     });
 
     it('rejects APPROVED to PENDING', () => {
@@ -57,9 +57,19 @@ describe('RequestStateMachine', () => {
       }
     });
 
-    it('rejects FAILED to any state except via manual admin action', () => {
-      for (const to of [P, APH, A, R, C]) {
+    it('allows FAILED to APPROVED (admin retry recovery)', () => {
+      expect(canTransition(F, A)).toBe(true);
+    });
+
+    it('rejects FAILED to non-recovery states', () => {
+      for (const to of [P, APH, R, C]) {
         expect(canTransition(F, to)).toBe(false);
+      }
+    });
+
+    it('rejects APPROVED to any state (APPROVED is terminal)', () => {
+      for (const to of [P, APH, R, C, F]) {
+        expect(canTransition(A, to)).toBe(false);
       }
     });
 

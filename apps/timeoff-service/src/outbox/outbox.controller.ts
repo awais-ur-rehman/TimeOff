@@ -48,7 +48,7 @@ export class OutboxController {
 
     await this.outboxRepo.update(id, {
       status: OutboxEventStatus.PENDING,
-      nextRetryAt: null,
+      nextRetryAt: new Date(),
     });
 
     return { id, status: OutboxEventStatus.PENDING };

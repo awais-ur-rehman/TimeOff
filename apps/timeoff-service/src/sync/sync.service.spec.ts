@@ -26,6 +26,7 @@ function makeSyncService(overrides: Partial<{
   balanceService: unknown;
   hcmClient: unknown;
   dataSource: unknown;
+  configService: unknown;
 }> = {}): SyncService {
   return new SyncService(
     (overrides.balanceRepo ?? null) as any,
@@ -35,6 +36,7 @@ function makeSyncService(overrides: Partial<{
     (overrides.balanceService ?? null) as any,
     (overrides.hcmClient ?? null) as any,
     (overrides.dataSource ?? null) as any,
+    (overrides.configService ?? { get: jest.fn() }) as any,
   );
 }
 
