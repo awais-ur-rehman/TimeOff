@@ -15,18 +15,13 @@ RUN npm run build:timeoff
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM node:20-alpine
 
-RUN apk add --no-cache curl python3 make g++
+RUN apk add --no-cache curl
 
 WORKDIR /app
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY package*.json ./
-
-# Recompile native modules for the runtime image's exact Node ABI
-RUN npm rebuild better-sqlite3
-
-RUN apk del python3 make g++ && rm -rf /var/cache/apk/*
 
 RUN mkdir -p /data
 
